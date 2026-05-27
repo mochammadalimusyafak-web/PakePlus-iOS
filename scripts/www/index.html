@@ -1,0 +1,2643 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>环绕唱片播放器</title>
+    <style>
+        /* --- 原生 CSS 变量与重置 --- */
+        :root {
+            --primary-color: #a855f7;
+            --primary-hover: #c084fc;
+            --secondary-color: #ec4899;
+            --bg-gradient: radial-gradient(circle at center, #1a1525 0%, #0c0813 100%);
+            --border-color: rgba(168, 85, 247, 0.2);
+            --text-main: #f3f4f6;
+            --text-muted: rgba(243, 244, 246, 0.3); /* 默认非高亮歌词的透明感，透出背景 */
+            
+            /* 歌词全局调色盘变量，由 JS 动态切换控制 */
+            --lyric-theme-color: rgba(243, 244, 246, 0.45); /* 默认非高亮行灰色 */
+            --lyric-highlight-shadow: rgba(168, 85, 247, 0.8);
+            --lyric-highlight-shadow-secondary: rgba(236, 72, 153, 0.4);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+
+        /* 强制 html & body 锁死 100% 视口高度，彻底消灭上下与左右滚动条 */
+        html, body {
+            width: 100%;
+            height: 100vh;
+            overflow: hidden !important;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            background: var(--bg-gradient);
+            transition: background 0.8s ease;
+        }
+
+        /* 静态/流光背景图层 */
+        #bg-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            z-index: -2;
+            transition: background-image 0.8s ease, filter 0.5s ease;
+        }
+
+        /* 动态视频 background 图层 (高阶Cover自适应) */
+        #bg-video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: -2;
+            pointer-events: none;
+            display: none; /* 默认隐藏，上传MP4时触发显示 */
+            transition: filter 0.5s ease;
+        }
+
+        #bg-darkness {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(12, 8, 19, 0.5); /* 变暗遮罩 */
+            z-index: -1;
+        }
+
+        /* --- 头部样式 (彻底去背景，100% 透明以完美透出顶部壁纸) --- */
+        header {
+            width: 100%;
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05); /* 仅用极淡分割线 */
+            background: transparent !important; /* 彻底去除黑色遮罩与毛玻璃限制 */
+            z-index: 10;
+            flex-shrink: 0; /* 拒绝头部高度被挤压 */
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 36px; /* 稍微缩小Logo图标，更清爽 */
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.9; }
+            50% { transform: scale(1.05); opacity: 1; }
+        }
+
+        .logo-text h1 {
+            font-size: 0.95rem; /* 适当压缩Logo字体 */
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            background: linear-gradient(to right, #c084fc, #f472b6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); /* 增加文字投影防止融入复杂背景 */
+        }
+
+        .logo-text p {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+        }
+
+        .control-btns {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .btn-action {
+            position: relative;
+            cursor: pointer;
+            background: rgba(168, 85, 247, 0.15);
+            border: 1px solid var(--border-color);
+            padding: 7px 14px; /* 稍微减小间距 */
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn-action:hover {
+            background: rgba(168, 85, 247, 0.3);
+            border-color: var(--primary-color);
+            transform: translateY(-1px);
+        }
+
+        .btn-action input[type="file"] {
+            display: none;
+        }
+
+        /* 一键导入整个文件夹 */
+        .btn-folder-import {
+            background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+            border: none;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(168, 85, 247, 0.2);
+        }
+        .btn-folder-import:hover {
+            background: linear-gradient(to right, #b766ff, #ff5ca8);
+            box-shadow: 0 4px 16px rgba(168, 85, 247, 0.45);
+        }
+
+        /* --- 主展示区 (通过 flex: 1 完美自适应填充屏幕高度，绝不溢出) --- */
+        main {
+            flex: 1; /* 1. 核心弹性自适应伸缩 */
+            min-height: 0; /* 2. 核心：防止容器高度被子元素撑大 */
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center; /* 确保整体在屏幕水平方向绝对居中 */
+            padding: 8px 24px; /* 精简垂直内边距，完全免除滚动 */
+            max-width: 1300px; 
+            margin: 0 auto;
+            width: 100%;
+            position: relative;
+            overflow: visible !important; /* 彻底释放横向遮挡 */
+        }
+
+        /* 唱片与歌词的整体对齐包装盒，整体向左位移以释放右半屏，防超长歌词右端溢出遮挡 */
+        .player-wrapper {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            max-width: 1200px;
+            position: relative;
+            overflow: visible !important;
+            transform: translateX(-110px); 
+            transition: transform 0.3s ease;
+        }
+
+        /* 左侧唱片包装层 (坚守左侧，唱片规格不作任何修改) */
+        .vinyl-section-wrapper {
+            flex: 0 0 50%; /* 唱片区域占据左半边屏幕 */
+            display: flex;
+            align-items: center;
+            justify-content: flex-end; /* 唱片完全右对齐靠向屏幕中线 */
+            z-index: 5;
+            position: relative;
+            padding-right: 24px; /* 让唱片与右边歌词更贴近 */
+        }
+
+        .vinyl-section {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 400px;
+            height: 400px;
+            flex-shrink: 0;
+            overflow: visible !important;
+        }
+
+        #visualizer-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* 💡 唱片容器：移除原先的 CSS spin 动画以改用毫秒级 JS 物理定位 */
+        .vinyl-container {
+            position: relative;
+            width: 310px;
+            height: 310px;
+            border-radius: 50%;
+            background: #050505;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 6px solid #1f2937;
+            z-index: 2;
+            transform-origin: center center;
+            will-change: transform;
+        }
+
+        /* 黑胶唱片音轨纹路 */
+        .vinyl-ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+        }
+        .ring-1 { inset: 10px; }
+        .ring-2 { inset: 25px; }
+        .ring-3 { inset: 45px; }
+        .ring-4 { inset: 70px; }
+        .ring-5 { inset: 100px; }
+
+        /* 唱片中心封面区域 (固定比例防形变与膨胀拉伸) */
+        .album-cover-wrapper {
+            position: relative;
+            width: 175px !important; 
+            height: 175px !important; 
+            border-radius: 50% !important;
+            overflow: hidden !important;
+            border: 4px solid #111827;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.6);
+            cursor: pointer;
+            z-index: 3;
+            flex-grow: 0 !important;
+            flex-shrink: 0 !important; /* 彻底断绝 Flexbox 导致的图片拉伸形变与变大问题 */
+        }
+
+        .album-cover-wrapper::after {
+            content: "更换图片";
+            position: absolute;
+            inset: 0;
+            background: rgba(12, 8, 19, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: bold;
+            color: #f3f4f6;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+            text-align: center;
+            padding: 10px;
+            border-radius: 50%;
+        }
+
+        .album-cover-wrapper:hover {
+            opacity: 1;
+        }
+
+        #album-cover {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: cover !important;
+            border-radius: 50% !important;
+            display: none;
+        }
+
+        #album-cover-svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* 唱片中心圆孔 */
+        .vinyl-center-hole {
+            position: absolute;
+            inset: 0;
+            margin: auto;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #050505;
+            border: 2px solid #374151;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 4;
+            pointer-events: none; 
+        }
+
+        .vinyl-center-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #111;
+        }
+
+        /* 唱针 */
+        #tonearm {
+            position: absolute;
+            top: 10px;
+            right: 40px;
+            width: 90px;
+            height: 140px;
+            transform-origin: 90% 10%;
+            transform: rotate(-25deg);
+            transition: transform 0.8s cubic-bezier(0.25, 1, 0.5, 1);
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        /* 右侧布局占位区 (彻底去框！不再包含歌词节点，仅作为右侧弹性伸缩空间) */
+        .lyrics-section {
+            flex: 0 0 50%; /* 占比保持 50% 对称 */
+            height: 440px; 
+            position: relative;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            outline: none !important;
+            overflow: visible !important; /* 彻底释放横向遮挡 */
+        }
+
+        #lyrics-track-container {
+            position: absolute;
+            inset: 0;
+            overflow: visible !important; /* 彻底放开右侧溢出，让长歌词向外无限延伸 */
+            display: flex;
+            align-items: center;
+            background: transparent !important; 
+            border: none !important; 
+            box-shadow: none !important;
+            outline: none !important;
+        }
+
+        /* 【100% 绝对圆心对齐核心】：
+           歌词视口被直接置于唱片区内，origin坐标 (0,0) 100% 绝对对齐唱片的圆心，
+           由于它处在 vinyl-pulsing-core 核心之外，唱片缩放时歌词绝对不抖动！ */
+        #lyrics-viewport {
+            position: absolute;
+            left: 50% !important; /* 精准定位在 .vinyl-section 的正中心 */
+            top: 50% !important;
+            width: 0px !important;
+            height: 0px !important;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding-left: 0px; 
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            outline: none !important;
+            overflow: visible !important; /* 解锁横向剪切，防右侧长字被截断遮挡 */
+            z-index: 10;
+        }
+
+        /* 歌词每行样式 (100% 绝对去背景、去多余的黑色/彩色底框影迹) 
+           【字号适应屏幕】：
+           通过引入 CSS 流式比例单位 (vw) 保证字体大小随屏幕或浏览器窗口变化进行平滑动态缩放！ 
+           💡 初始基础大小已放大 10%（由原先的 0.85 提升至 0.935，并等比增大基础物理像素） */
+        .lyric-line {
+            position: absolute;
+            left: 0px !important; /* 起点死锁在圆心 */
+            top: 50% !important;
+            margin-top: -12px !important;
+            text-align: left;
+            /* 字号大小通过vw单位并在 JS 无响应时默认应用更舒适的 0.935 (原 0.85 * 1.1) 比例偏置与 5.5px */
+            font-size: calc(1.1vw * 0.935 + 5.5px); 
+            font-weight: 600;
+            white-space: nowrap !important;
+            /* 100% 宽容长歌词横向展开，右侧不剪切，支持无遮挡展延至 1000px 以上，杜绝截断 */
+            width: 1000px !important; 
+            overflow: visible !important;
+            text-overflow: clip !important;
+            transform-origin: 0% 50% !important; /* 确保极坐标起点100%绝对对齐在弧线轨迹上，拒绝形变偏差 */
+            transition: transform 0.7s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.7s ease, color 0.5s ease, font-size 0.5s ease;
+            pointer-events: none;
+            
+            /* 【流式色彩渲染中心】：全局跟随 CSS 变量，歌词及歌词里的所有符号都 100% 统一色彩 */
+            color: var(--lyric-theme-color) !important;
+            
+            background: transparent !important; /* 100% 纯透明去背景 */
+            border: none !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+        
+        .lyric-line::selection {
+            background: transparent !important;
+        }
+
+        /* 正在播放的当前句高亮 (去除任何可能有背景框视觉的过度修饰，仅保留高辨识度深色阴影与纯净白字，字号等比缩减) 
+           💡 高亮行基于比例自动放大，基础大小同样放大了 10% （由原先的 0.85 提升至 0.935） */
+        .lyric-highlight {
+            color: #ffffff !important; /* 高亮句始终呈现耀眼的纯白质感 */
+            font-weight: 800;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            font-size: calc(1.37vw * 0.935 + 6.6px); /* 高亮行基于比例自动放大，同样随屏幕缩放！ */
+            
+            /* 【核心调色盘联动】：发光霓虹阴影完美随你选择的主题而改变，保证文字超强可读性 */
+            text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.9), 
+                         0 0 10px var(--lyric-highlight-shadow), 
+                         0 0 20px var(--lyric-highlight-shadow-secondary) !important;
+        }
+
+        .lyric-english {
+            /* 英文文本也统一染色 */
+            color: inherit !important;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+        }
+
+        /* 歌词内符号染色器，确保如 🎵 等符号与歌词基色一致 */
+        .lyric-line span, .lyric-line i {
+            color: inherit !important;
+        }
+
+        /* --- 📱 响应式自适应：当屏幕尺寸较小时自动隐去歌词，唱片绝对居中 --- */
+        @media (max-width: 768px) {
+            main {
+                justify-content: center !important;
+                gap: 0 !important;
+            }
+
+            .player-wrapper {
+                transform: translateX(0) !important; /* 窄屏重置左移偏置，使其在小窗口下自适应居中 */
+                padding-left: 0px !important;
+            }
+
+            #lyrics-viewport {
+                display: none !important; /* 小于768px时优雅隐去歌词轨道，保护单唱机排版美学 */
+            }
+
+            .lyrics-section {
+                display: none;
+            }
+
+            .vinyl-section-wrapper {
+                flex: 1 !important;
+                max-width: 100% !important;
+                justify-content: center !important; /* 唱片在窄屏下自动绝对居中 */
+                padding-right: 0px !important;
+            }
+
+            .vinyl-section {
+                width: 300px;
+                height: 300px;
+            }
+
+            .vinyl-container {
+                width: 240px;
+                height: 240px;
+            }
+
+            .album-cover-wrapper {
+                width: 125px !important;
+                height: 125px !important;
+            }
+
+            #tonearm {
+                right: 30px;
+                width: 70px;
+                height: 110px;
+            }
+        }
+
+        /* --- 智能歌单侧边面板 --- */
+        #playlist-drawer {
+            position: absolute;
+            left: 24px;
+            bottom: 24px;
+            width: 260px;
+            max-height: 280px;
+            background: rgba(15, 11, 25, 0.75);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 15;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        #playlist-drawer.hidden-drawer {
+            transform: translateY(20px);
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .drawer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.75rem;
+            color: var(--primary-hover);
+            font-weight: bold;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 6px;
+            flex-shrink: 0; /* 防止标题被挤压 */
+        }
+
+        .drawer-close {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        .drawer-close:hover {
+            color: #fff;
+        }
+
+        .playlist-items {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-height: 0; /* 允许弹性容器收缩，触发滚动条 */
+        }
+
+        /* 优雅的微型渐变滚动条 */
+        .playlist-items::-webkit-scrollbar {
+            width: 4px;
+        }
+        .playlist-items::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.02);
+            border-radius: 9999px;
+        }
+        .playlist-items::-webkit-scrollbar-thumb {
+            background: rgba(168, 85, 247, 0.3);
+            border-radius: 9999px;
+        }
+        .playlist-items::-webkit-scrollbar-thumb:hover {
+            background: rgba(168, 85, 247, 0.6);
+        }
+
+        .playlist-item {
+            padding: 8px 10px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #d1d5db;
+            transition: all 0.2s ease;
+            background: rgba(255, 255, 255, 0.02);
+            text-align: left;
+            border: 1px solid transparent;
+            flex-shrink: 0; /* 🔥 核心优化：确保即使列表超长，单条歌曲行也绝对不被挤压变形 */
+        }
+
+        .playlist-item:hover {
+            background: rgba(168, 85, 247, 0.1);
+            color: #fff;
+        }
+
+        .playlist-item.active-item {
+            background: rgba(168, 85, 247, 0.2);
+            border-color: rgba(168, 85, 247, 0.4);
+            color: #fff;
+            font-weight: bold;
+        }
+
+        /* --- 底部控制栏 (100% 透明，超紧凑布局并下移，防影响欣赏背景) --- */
+        footer {
+            width: 100%;
+            background: transparent !important; 
+            border-top: 1px solid rgba(255, 255, 255, 0.05); 
+            padding: 10px 40px; /* 大幅缩窄垂直间距，使控制栏极具轻量感并沉到底部最边缘 */
+            z-index: 10;
+            flex-shrink: 0; /* 拒绝底部高度被挤压 */
+        }
+
+        @media (max-width: 640px) {
+            footer {
+                padding: 12px 16px;
+            }
+        }
+
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px; /* 紧实过渡 */
+        }
+
+        @media (max-width: 768px) {
+            .footer-content {
+                flex-direction: column;
+                gap: 12px;
+            }
+        }
+
+        .track-info {
+            width: 25%;
+            min-width: 180px;
+        }
+
+        @media (max-width: 768px) {
+            .track-info {
+                width: 100%;
+                text-align: center;
+            }
+        }
+
+        /* 增加文字阴影，保证在极亮背景图下文字也清晰可辨 */
+        #track-title {
+            font-size: 1.15rem; /* 稍微压缩歌名大小，更不抢眼 */
+            font-weight: 800; 
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #ffffff;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+        }
+
+        #track-artist {
+            font-size: 0.72rem; /* 歌手大小微调 */
+            color: var(--primary-hover);
+            margin-top: 4px; 
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .player-controls {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px; /* 压缩行间距，使整体更低调下移 */
+            max-width: 600px;
+            width: 100%;
+        }
+
+        .button-row {
+            display: flex;
+            align-items: center;
+            gap: 18px; /* 稍微缩窄按钮之间的宽度，排布更精致 */
+        }
+
+        .btn-ctrl {
+            background: none;
+            border: none;
+            cursor: pointer;
+            width: 32px; /* 控制控件稍微缩小 */
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            transition: color 0.2s, transform 0.2s;
+            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7)); 
+        }
+
+        .btn-ctrl:hover {
+            color: var(--primary-hover);
+            transform: scale(1.05);
+        }
+
+        .btn-ctrl svg {
+            width: 16px; /* 缩减内部 svg 矢量的大小，使整体看起来极致秀气 */
+            height: 16px;
+        }
+
+        .btn-play-pause {
+            width: 42px; /* 播放按钮由 48px 微调缩小到 42px */
+            height: 42px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            color: #ffffff;
+            box-shadow: 0 4px 10px rgba(168, 85, 247, 0.35);
+            filter: none; 
+        }
+
+        .btn-play-pause svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .btn-play-pause:hover {
+            background: var(--primary-hover);
+            color: #ffffff;
+            transform: scale(1.08);
+        }
+
+        .btn-play-pause:active {
+            transform: scale(0.95);
+        }
+
+        .progress-row {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.65rem; /* 进度时间字体稍微调小 */
+            color: var(--text-main);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.85); 
+        }
+
+        .progress-container {
+            flex: 1;
+            height: 4px; /* 进度条由 6px 缩窄至 4px，降低视觉干扰 */
+            background: rgba(39, 39, 42, 0.5); 
+            border-radius: 9999px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+            border-radius: 9999px;
+            width: 0%;
+            position: relative;
+        }
+
+        .progress-handle {
+            position: absolute;
+            right: -3px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 8px;
+            height: 8px;
+            background: #ffffff;
+            border: 1.5px solid var(--primary-color);
+            border-radius: 50%;
+            display: block; /* 配合拖拽体验，不再仅在 hover 时显示 */
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .progress-container:hover .progress-handle,
+        .progress-container.dragging .progress-handle {
+            opacity: 1;
+        }
+
+        /* 附加操作 */
+        .extra-controls {
+            width: 25%;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 12px;
+            position: relative;
+        }
+
+        @media (max-width: 768px) {
+            .extra-controls {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+
+        .volume-area {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .slider-input {
+            width: 70px; /* 音量滑条微缩 */
+            height: 3px;
+            background: rgba(39, 39, 42, 0.5);
+            border-radius: 9999px;
+            appearance: none;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .slider-input::-webkit-slider-thumb {
+            appearance: none;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary-color);
+        }
+
+        /* 背景/调色盘控制浮窗基类 */
+        .bg-control-panel, .color-control-panel {
+            position: relative;
+        }
+
+        .bg-menu, .color-menu {
+            display: none;
+            position: absolute;
+            bottom: 45px;
+            right: 0;
+            background: rgba(15, 12, 22, 0.95);
+            border: 1px solid var(--border-color);
+            backdrop-filter: blur(20px);
+            border-radius: 12px;
+            padding: 16px;
+            width: 240px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            z-index: 20;
+        }
+
+        .bg-menu.show, .color-menu.show {
+            display: block;
+        }
+
+        .bg-menu h5, .color-menu h5 {
+            font-size: 0.8rem;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 4px;
+        }
+
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .preset-btn {
+            padding: 6px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            font-size: 0.7rem;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .preset-btn:hover {
+            border-color: var(--primary-color);
+            background: rgba(168, 85, 247, 0.1);
+        }
+
+        /* 歌词调色专用网格 */
+        .color-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .color-dot-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 8px 4px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+
+        .color-dot-btn:hover {
+            transform: scale(1.05);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .color-dot-btn.active-color {
+            border-color: var(--primary-color);
+            background: rgba(168, 85, 247, 0.12);
+        }
+
+        .color-preview-circle {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        .color-label {
+            font-size: 0.65rem;
+            color: #d1d5db;
+        }
+
+        .custom-upload-area {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .btn-bg-file {
+            width: 100%;
+            justify-content: center;
+            margin-bottom: 8px;
+        }
+
+        /* --- 弹窗样式 --- */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+
+        .modal-overlay.hidden {
+            display: none;
+        }
+
+        .modal-card {
+            background: #120e1c;
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            max-width: 440px;
+            width: 100%;
+            padding: 24px;
+            position: relative;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .modal-close:hover {
+            color: #fff;
+        }
+
+        .modal-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--primary-hover);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal-body {
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #d1d5db;
+        }
+
+        .modal-body p {
+            margin-bottom: 12px;
+        }
+
+        .modal-body ul, .modal-body ol {
+            padding-left: 20px;
+            margin-bottom: 12px;
+            color: var(--text-muted);
+        }
+
+        .modal-body li {
+            margin-bottom: 4px;
+        }
+
+        .btn-modal-ok {
+            width: 100%;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 16px;
+            transition: background 0.2s;
+        }
+
+        .btn-modal-ok:hover {
+            background: var(--primary-hover);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 动态背景层 (图片与视频层双向备用) -->
+    <div id="bg-overlay"></div>
+    <video id="bg-video" autoplay loop muted playsinline></video>
+    <div id="bg-darkness"></div>
+
+    <!-- 顶部导航 -->
+    <header>
+        <div class="logo-area">
+            <div class="logo-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-white"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+            </div>
+            <div class="logo-text">
+                <h1>ARC LYRIC PLAYER</h1>
+                <p>极光黑胶弧形歌词播放器</p>
+            </div>
+        </div>
+        
+        <div class="control-btns">
+            <!-- 一键导入文件夹按钮 -->
+            <label class="btn-action btn-folder-import" title="智能识别整个文件夹内的 MP3, LRC 与封面图">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <span>音乐文件夹</span>
+                <input type="file" id="folder-input" webkitdirectory directory multiple>
+            </label>
+
+            <!-- 备用单文件读取 -->
+            <label class="btn-action">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                <span>单曲 (MP3)</span>
+                <input type="file" id="audio-file" accept="audio/*">
+            </label>
+            <label class="btn-action">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2-2H12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                <span>单歌词 (LRC)</span>
+                <input type="file" id="lrc-file" accept=".lrc">
+            </label>
+        </div>
+    </header>
+
+    <!-- 主展示区 -->
+    <main>
+        
+        <!-- 核心物理对称包裹层 (唱片 + 歌词的结合线严格锁死在中轴) -->
+        <div class="player-wrapper">
+            <!-- 左侧：唱片 + 环绕频谱仪 (包含独立律动核心层) -->
+            <div class="vinyl-section-wrapper">
+                <div id="vinyl-section" class="vinyl-section">
+                    <!-- 【重要重构：振幅脉冲核心组】：
+                         仅在此容器上应用重重低音律动。它包含极光频谱和黑胶，
+                         让磁针头与放置于其外的 #lyrics-viewport 彻底免受 scale 物理抖动！ -->
+                    <div id="vinyl-pulsing-core" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; transition: transform 0.08s ease-out;">
+                        <canvas id="visualizer-canvas"></canvas>
+                        <div id="vinyl-container" class="vinyl-container">
+                            <!-- 黑胶纹理 -->
+                            <div class="vinyl-ring ring-1"></div>
+                            <div class="vinyl-ring ring-2"></div>
+                            <div class="vinyl-ring ring-3"></div>
+                            <div class="vinyl-ring ring-4"></div>
+                            <div class="vinyl-ring ring-5"></div>
+
+                            <!-- 封面图区域 -->
+                            <div id="album-cover-clicker" class="album-cover-wrapper" title="点击手动更换歌曲中心图片">
+                                <!-- 默认占位 SVG -->
+                                <svg id="album-cover-svg" viewBox="0 0 100 100" style="background:#2d1b4e; width:100%; height:100%;">
+                                    <circle cx="50" cy="50" r="30" fill="none" stroke="#a855f7" stroke-width="2" stroke-linecap="round"/>
+                                    <path d="M50 35 L50 65 M35 50 L65 50" stroke="#ec4899" stroke-width="2" stroke-linecap="round"/>
+                                    <circle cx="50" cy="50" r="10" fill="#f472b6"/>
+                                </svg>
+                                <img id="album-cover" src="" alt="Album Art">
+                                <input type="file" id="cover-file" accept="image/*" style="display: none;">
+                            </div>
+                            
+                            <!-- 轴心中心 -->
+                            <div class="vinyl-center-hole">
+                                <div class="vinyl-center-dot"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 磁针头 (静止、不抖动) -->
+                    <div id="tonearm">
+                        <svg width="100%" height="100%" viewBox="0 0 100 150" fill="none">
+                            <path d="M90 10 L80 15 L35 110 L30 105 L20 125 L35 130 L40 115" stroke="#9ca3af" stroke-width="4.5" stroke-linecap="round"/>
+                            <circle cx="90" cy="10" r="9" fill="#4b5563"/>
+                            <rect x="12" y="118" width="18" height="14" rx="2" transform="rotate(22 12 118)" fill="#1f2937" stroke="#9ca3af" stroke-width="1.5"/>
+                        </svg>
+                    </div>
+
+                    <!-- 弧形歌词视口：完美嵌套于唱机中轴原点！但置于 pulsing-core 核心之外，实现物理完全绝缘，拒绝 any 抖动！ -->
+                    <div id="lyrics-viewport"></div>
+                </div>
+            </div>
+
+            <!-- 右侧：无框弧形歌词 (仅作为弹性右半屏布局占位，去除了里面所有的遮挡盒子) -->
+            <div class="lyrics-section">
+                <div id="lyrics-track-container"></div>
+            </div>
+        </div>
+
+        <!-- 智能歌单侧边面板 -->
+        <div id="playlist-drawer" class="hidden-drawer">
+            <div class="drawer-header">
+                <span>📁 导入的曲目列表</span>
+                <button class="drawer-close" id="btn-drawer-close">✕</button>
+            </div>
+            <div class="playlist-items" id="playlist-items-container">
+                <!-- 曲目行将在此动态渲染 -->
+            </div>
+        </div>
+
+    </main>
+
+    <!-- 底部：控制栏 (100% 透明，超紧凑布局并下移，防影响欣赏背景) -->
+    <footer>
+        <div class="footer-content">
+            
+            <!-- 歌曲信息 -->
+            <div class="track-info">
+                <h3 id="track-title">未载入音频</h3>
+                <p id="track-artist">导入文件夹或 MP3 即可智能匹配唱片和歌词</p>
+            </div>
+
+            <!-- 控制部分 -->
+            <div class="player-controls">
+                <div class="button-row">
+                    <!-- Prev -->
+                    <button id="btn-prev" class="btn-ctrl" title="上一首">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg>
+                    </button>
+                    <!-- Play/Pause -->
+                    <button id="btn-play-pause" class="btn-ctrl btn-play-pause" title="播放/暂停">
+                        <svg id="svg-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="margin-left:2px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        <svg id="svg-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                    </button>
+                    <!-- Next -->
+                    <button id="btn-next" class="btn-ctrl" title="下一首">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>
+                    </button>
+                    <!-- Play Mode (一键循环切歌模式) -->
+                    <button id="btn-loop" class="btn-ctrl" title="列表循环">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
+                    </button>
+                </div>
+                
+                <!-- 进度条 -->
+                <div class="progress-row">
+                    <span id="time-current">00:00</span>
+                    <div id="progress-container" class="progress-container">
+                        <div id="progress-bar" class="progress-bar">
+                            <div class="progress-handle"></div>
+                        </div>
+                    </div>
+                    <span id="time-duration">00:00</span>
+                </div>
+            </div>
+
+            <!-- 音量与背景/颜色设置 -->
+            <div class="extra-controls">
+                <!-- 歌单列表抽屉唤起按钮 -->
+                <button id="btn-playlist-toggle" class="btn-ctrl" title="打开播放列表" style="margin-right: 8px;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                </button>
+
+                <!-- 歌词字体调节面板 -->
+                <div class="color-control-panel" style="margin-right: 4px;">
+                    <button id="btn-font-toggle" class="btn-ctrl" title="更改歌词字号" style="color: #a855f7;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="4 7 4 4 20 4 20 7"></polyline>
+                            <line x1="9" y1="20" x2="15" y2="20"></line>
+                            <line x1="12" y1="4" x2="12" y2="20"></line>
+                        </svg>
+                    </button>
+                    
+                    <!-- 歌词字号弹出菜单 -->
+                    <div id="font-menu" class="color-menu">
+                        <h5>歌词字体大小</h5>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="font-size:0.65rem; color:var(--text-muted); display:flex; justify-content:space-between; margin-top:4px;">
+                                <span>缩放比例:</span>
+                                <span id="font-size-val">100%</span>
+                            </div>
+                            <input id="lyric-font-size-control" type="range" min="0.5" max="1.8" step="0.05" value="1.0" class="slider-input" style="width:100%;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 歌词颜色调节面板 -->
+                <div class="color-control-panel" style="margin-right: 4px;">
+                    <button id="btn-color-toggle" class="btn-ctrl" title="更改歌词颜色" style="color: #60a5fa;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 11.5 21.5 11 21 11H12V2H11C5.47715 2 2 5.47715 2 11C2 16.5228 6.47715 22 12 22Z"></path><circle cx="7.5" cy="10.5" r="1.5" fill="currentColor"></circle><circle cx="11.5" cy="7.5" r="1.5" fill="currentColor"></circle><circle cx="16.5" cy="11.5" r="1.5" fill="currentColor"></circle></svg>
+                    </button>
+                    
+                    <!-- 霓虹调色弹出浮窗 -->
+                    <div id="color-menu" class="color-menu">
+                        <h5>歌词霓虹主题色</h5>
+                        <div class="color-grid" id="theme-color-container">
+                            <!-- JS 动态注入高品质发光颜色小圆点 -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="volume-area" style="margin-right: 4px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                    <input id="volume-control" type="range" min="0" max="1" step="0.05" value="0.7" class="slider-input">
+                </div>
+                
+                <!-- 背景选择按钮 -->
+                <div class="bg-control-panel">
+                    <button id="btn-bg-toggle" class="btn-ctrl" title="更换背景" style="color:var(--secondary-color);">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                    </button>
+                    
+                    <!-- 背景弹出面板 -->
+                    <div id="bg-menu" class="bg-menu">
+                        <h5>内置流光主题</h5>
+                        <div class="preset-grid">
+                            <button class="preset-btn" data-type="gradient" data-val="radial-gradient(circle at center, #1a1525 0%, #0c0813 100%)">深空幽紫</button>
+                            <button class="preset-btn" data-type="gradient" data-val="linear-gradient(135deg, #1e1b4b 0%, #31102f 50%, #090514 100%)">赛博霓虹</button>
+                            <button class="preset-btn" data-type="gradient" data-val="linear-gradient(135deg, #064e3b 0%, #022c22 100%)">暗绿森林</button>
+                            <button class="preset-btn" data-type="gradient" data-val="radial-gradient(circle at center, #1e293b 0%, #0f172a 100%)">经典碳黑</button>
+                        </div>
+
+                        <h5>展示分辨率模式</h5>
+                        <div class="preset-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 12px; gap: 4px;">
+                            <button class="preset-btn" id="btn-mode-cover" style="font-size: 0.65rem; padding: 4px;">拉伸铺满</button>
+                            <button class="preset-btn" id="btn-mode-contain" style="font-size: 0.65rem; padding: 4px;">等比完整</button>
+                            <button class="preset-btn" id="btn-mode-tile" style="font-size: 0.65rem; padding: 4px;">原始平铺</button>
+                        </div>
+                        
+                        <h5>自定义壁纸/视频</h5>
+                        <div class="custom-upload-area">
+                            <label class="btn-action btn-bg-file">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                                <span>选择本地图片/视频</span>
+                                <input type="file" id="bg-file" accept="image/*,video/*">
+                            </label>
+                            
+                            <!-- 虚化参数调节 -->
+                            <div style="font-size:0.65rem; color:var(--text-muted); display:flex; justify-content:space-between; margin-top:4px;">
+                                <span>虚化程度:</span>
+                                <span id="blur-val">15px</span>
+                            </div>
+                            <input id="bg-blur" type="range" min="0" max="40" value="15" class="slider-input" style="width:100%;">
+                        </div>
+                    </div>
+                </div>
+
+                <button id="btn-info" class="btn-ctrl" title="说明书">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                </button>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 使用说明弹窗 -->
+    <div id="info-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <button id="close-modal" class="modal-close">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+            <h4 class="modal-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+                引导说明
+            </h4>
+            <div class="modal-body">
+                <p><strong>💿 100% 纯本地极速离线版已就绪！</strong></p>
+                <p>为满足您的完全单机、本地私密播放需求，我已将播放器从繁杂的第三方依赖中剥离。即使在无网环境下也能百分之百完美运行。</p>
+                <p><strong>💡 基础操作指引：</strong></p>
+                <ol>
+                    <li>点击右上角 <strong>“导入音乐文件夹”</strong>，选择您的本地音乐文件夹。</li>
+                    <li>系统将通过<strong>多重智能名称模糊计算</strong>，秒级完成歌曲、歌词、专属唱片图片的绑定！</li>
+                    <li><strong>更换背景与色彩</strong>：点击右下角画笔或调色盘按钮，可以一键切换霓虹主题，或者定制专属的 <b>歌词向心发光色彩</b>！</li>
+                </ol>
+            </div>
+            <button id="btn-modal-ok" class="btn-modal-ok">开始体验</button>
+        </div>
+    </div>
+
+    <script>
+        // --- 全局核心状态 ---
+        let audioContext = null;
+        let analyser = null;
+        let gainNode = null;
+        let audioSource = null;
+        let isPlaying = false;
+        let lyrics = [];
+        let currentLyricIndex = -1;
+        let bgVideoUrl = null; // 用于存放动态背景视频的 object URL
+        let currentDisplayMode = 'cover'; // 'cover', 'contain', 'tile'
+        let playMode = 'list'; // 新增核心状态：'list' (列表循环), 'shuffle' (随机播放), 'single' (单曲循环)
+        let lyricSizeMultiplier = 1.0; // 新增核心状态：歌词字号微调比例，默认为 1.0 (100%)
+
+        // 🌟 高精度拖拽进度条状态锁及拖拽虚拟时间指针
+        let isDraggingProgressBar = false; 
+        let dragTargetTime = 0; 
+
+        // 智能歌单引擎列表
+        let trackList = []; // 曲目池: { id, name, title, artist, audioFile, lrcFile, coverFile, audioUrl }
+        let currentTrackIndex = -1;
+
+        // 歌词高阶色彩库配置
+        const COLOR_THEMES = [
+            { id: "white", name: "雪莹白", normal: "rgba(243, 244, 246, 0.42)", highlight: "#ffffff", glow1: "rgba(168, 85, 247, 0.8)", glow2: "rgba(236, 72, 153, 0.4)", dot: "#f3f4f6" },
+            { id: "green", name: "极光绿", normal: "rgba(52, 211, 153, 0.38)", highlight: "#34d399", glow1: "rgba(16, 185, 129, 0.9)", glow2: "rgba(52, 211, 153, 0.4)", dot: "#34d399" },
+            { id: "pink", name: "樱花粉", normal: "rgba(244, 114, 182, 0.38)", highlight: "#f472b6", glow1: "rgba(219, 39, 119, 0.9)", glow2: "rgba(244, 114, 182, 0.4)", dot: "#f472b6" },
+            { id: "purple", name: "霓虹紫", normal: "rgba(192, 132, 252, 0.38)", highlight: "#c084fc", glow1: "rgba(147, 51, 234, 0.9)", glow2: "rgba(192, 132, 252, 0.4)", dot: "#c084fc" },
+            { id: "orange", name: "日落橙", normal: "rgba(251, 146, 60, 0.38)", highlight: "#fb923c", glow1: "rgba(234, 88, 12, 0.9)", glow2: "rgba(251, 146, 60, 0.4)", dot: "#fb923c" },
+            { id: "blue", name: "冰晶蓝", normal: "rgba(96, 165, 250, 0.38)", highlight: "#60a5fa", glow1: "rgba(37, 99, 235, 0.9)", glow2: "rgba(96, 165, 250, 0.4)", dot: "#60a5fa" }
+        ];
+        let currentThemeId = "white"; // 默认雪莹白
+
+        const localAudio = new Audio();
+        if (window.location.protocol !== 'file:') {
+            localAudio.crossOrigin = "anonymous";
+        }
+
+        // DOM 元素引用
+        const canvas = document.getElementById('visualizer-canvas');
+        const ctx = canvas.getContext('2d');
+        const vinylContainer = document.getElementById('vinyl-container');
+        const vinylPulsingCore = document.getElementById('vinyl-pulsing-core'); // 重构的脉冲抖动核心
+        const tonearm = document.getElementById('tonearm');
+        const lyricsViewport = document.getElementById('lyrics-viewport');
+        const albumCover = document.getElementById('album-cover');
+        const albumCoverSvg = document.getElementById('album-cover-svg');
+        const albumCoverClicker = document.getElementById('album-cover-clicker');
+        const coverFileInput = document.getElementById('cover-file');
+        
+        const trackTitle = document.getElementById('track-title');
+        const trackArtist = document.getElementById('track-artist');
+        
+        const btnPlayPause = document.getElementById('btn-play-pause');
+        const svgPlay = document.getElementById('svg-play');
+        const svgPause = document.getElementById('svg-pause');
+        
+        const timeCurrent = document.getElementById('time-current');
+        const timeDuration = document.getElementById('time-duration');
+        const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('progress-container');
+        const volumeControl = document.getElementById('volume-control');
+        
+        const audioFileInput = document.getElementById('audio-file');
+        const lrcFileInput = document.getElementById('lrc-file');
+        const folderInput = document.getElementById('folder-input');
+
+        const btnPlaylistToggle = document.getElementById('btn-playlist-toggle');
+        const playlistDrawer = document.getElementById('playlist-drawer');
+        const btnDrawerClose = document.getElementById('btn-drawer-close');
+        const playlistContainer = document.getElementById('playlist-items-container');
+        
+        const btnBgToggle = document.getElementById('btn-bg-toggle');
+        const bgMenu = document.getElementById('bg-menu');
+        const bgOverlay = document.getElementById('bg-overlay');
+        const bgVideo = document.getElementById('bg-video'); // 新增：动态背景视频层
+        const bgBlurInput = document.getElementById('bg-blur');
+        const blurValText = document.getElementById('blur-val');
+        const bgFileInput = document.getElementById('bg-file');
+
+        // 背景显示模式按钮引用
+        const btnModeCover = document.getElementById('btn-mode-cover');
+        const btnModeContain = document.getElementById('btn-mode-contain');
+        const btnModeTile = document.getElementById('btn-mode-tile');
+
+        // 颜色面板及弹出控制
+        const btnColorToggle = document.getElementById('btn-color-toggle');
+        const colorMenu = document.getElementById('color-menu');
+        const themeColorContainer = document.getElementById('theme-color-container');
+
+        // 字号调节面板引用
+        const btnFontToggle = document.getElementById('btn-font-toggle');
+        const fontMenu = document.getElementById('font-menu');
+        const lyricFontSizeControl = document.getElementById('lyric-font-size-control');
+        const fontSizeValText = document.getElementById('font-size-val');
+
+        // 播放模式控制按钮
+        const btnPlayMode = document.getElementById('btn-loop');
+
+        const infoModal = document.getElementById('info-modal');
+        const btnInfo = document.getElementById('btn-info');
+        const btnModalOk = document.getElementById('btn-modal-ok');
+        const closeModal = document.getElementById('close-modal');
+
+        // --- 优雅的占位引导歌词 ---
+        const PLACEHOLDER_LYRICS = `
+[00:00.00] 🎵 正在为您播放音乐 🎵
+[00:04.00] 💡 温馨提示：点击右上角“导入文件夹”
+[00:08.00] 即可批量配对整个目录下的 MP3、LRC 与唱片图片
+[00:12.00] ✨ 点击唱片正中心还可以直接自定义更换图片哦
+[00:16.00] 🎚️ 调整右下方彩色画笔，还能支持自定义壁纸及虚化
+        `;
+
+        // 初始化
+        window.addEventListener('load', () => {
+            parseLRC(PLACEHOLDER_LYRICS);
+            renderCurvedLyrics();
+            resizeCanvas();
+            initCanvasVisualizer();
+            setDisplayMode('cover'); // 初始设置为拉伸铺满
+            renderThemeColorPicker(); // 初始化歌词霓虹调色盘
+            applyColorTheme('white'); // 初始雪莹白
+            updatePlayModeUI(); // 初始化播放模式控制按钮显示
+            
+            // 绑定背景预设
+            document.querySelectorAll('.preset-btn').forEach(btn => {
+                // 排除分辨率模式按钮
+                if (btn.id === 'btn-mode-cover' || btn.id === 'btn-mode-contain' || btn.id === 'btn-mode-tile') return;
+
+                btn.addEventListener('click', (e) => {
+                    const val = e.target.getAttribute('data-val');
+                    
+                    // 清理视频 background 层
+                    if (bgVideoUrl) {
+                        URL.revokeObjectURL(bgVideoUrl);
+                        bgVideoUrl = null;
+                    }
+                    bgVideo.src = '';
+                    bgVideo.style.display = 'none';
+
+                    bgOverlay.style.display = 'block';
+                    bgOverlay.style.backgroundImage = 'none';
+                    document.body.style.background = val;
+                });
+            });
+
+            // 绑定分辨率模式切换
+            btnModeCover.addEventListener('click', () => setDisplayMode('cover'));
+            btnModeContain.addEventListener('click', () => setDisplayMode('contain'));
+            btnModeTile.addEventListener('click', () => setDisplayMode('tile'));
+
+            // 歌词调色弹窗控制
+            btnColorToggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                bgMenu.style.display = 'none'; // 互斥
+                fontMenu.classList.remove('show'); // 互斥
+                colorMenu.classList.toggle('show');
+            });
+
+            // 歌词字号弹窗控制
+            btnFontToggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                bgMenu.style.display = 'none'; // 互斥
+                colorMenu.classList.remove('show'); // 互斥
+                fontMenu.classList.toggle('show');
+            });
+
+            // 歌词字号滑块拖拽事件
+            lyricFontSizeControl.addEventListener('input', (e) => {
+                const val = parseFloat(e.target.value);
+                lyricSizeMultiplier = val;
+                fontSizeValText.textContent = `${Math.round(val * 100)}%`;
+                updateLyricsLayout(); // 即时刷新歌词布局渲染
+            });
+
+            // 绑定一键切换列表播放/随机播放/单曲循环模式 (顺序循环触发)
+            btnPlayMode.addEventListener('click', () => {
+                if (playMode === 'list') {
+                    playMode = 'shuffle';
+                } else if (playMode === 'shuffle') {
+                    playMode = 'single';
+                } else {
+                    playMode = 'list';
+                }
+                updatePlayModeUI();
+            });
+
+            window.addEventListener('resize', () => {
+                resizeCanvas();
+                updateLyricsLayout();
+            });
+
+            // 弹出说明书
+            infoModal.classList.remove('hidden');
+        });
+
+        // --- 切换背景分辨率与平铺显示模式 ---
+        function setDisplayMode(mode) {
+            currentDisplayMode = mode;
+            [btnModeCover, btnModeContain, btnModeTile].forEach(btn => {
+                btn.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                btn.style.background = 'rgba(255, 255, 255, 0.05)';
+            });
+
+            const activeBtn = document.getElementById(`btn-mode-${mode}`);
+            if (activeBtn) {
+                activeBtn.style.borderColor = 'var(--primary-color)';
+                activeBtn.style.background = 'rgba(168, 85, 247, 0.15)';
+            }
+
+            if (mode === 'cover') {
+                bgOverlay.style.backgroundSize = 'cover';
+                bgOverlay.style.backgroundRepeat = 'no-repeat';
+                bgVideo.style.objectFit = 'cover';
+                bgOverlay.style.width = '100%';
+                bgOverlay.style.height = '100%';
+                bgOverlay.style.top = '0';
+                bgOverlay.style.left = '0';
+            } else if (mode === 'contain') {
+                bgOverlay.style.backgroundSize = 'contain';
+                bgOverlay.style.backgroundRepeat = 'no-repeat';
+                bgVideo.style.objectFit = 'contain';
+                bgOverlay.style.width = '100%';
+                bgOverlay.style.height = '100%';
+                bgOverlay.style.top = '0';
+                bgOverlay.style.left = '0';
+            } else if (mode === 'tile') {
+                bgOverlay.style.backgroundSize = 'auto';
+                bgOverlay.style.backgroundRepeat = 'repeat';
+                bgVideo.style.objectFit = 'none';
+            }
+        }
+
+        // --- 渲染并动态绑定颜色调色盘 ---
+        function renderThemeColorPicker() {
+            themeColorContainer.innerHTML = '';
+            COLOR_THEMES.forEach(t => {
+                const btn = document.createElement('div');
+                btn.className = 'color-dot-btn' + (t.id === currentThemeId ? ' active-color' : '');
+                btn.id = `theme-color-${t.id}`;
+                btn.title = t.name;
+                
+                btn.innerHTML = `
+                    <div class="color-preview-circle" style="color: ${t.highlight}; background: ${t.dot}"></div>
+                    <span class="color-label">${t.name}</span>
+                `;
+                
+                btn.addEventListener('click', () => {
+                    applyColorTheme(t.id);
+                });
+                
+                themeColorContainer.appendChild(btn);
+            });
+        }
+
+        // --- 执行颜色主题应用 ---
+        function applyColorTheme(themeId) {
+            currentThemeId = themeId;
+            const theme = COLOR_THEMES.find(t => t.id === themeId) || COLOR_THEMES[0];
+            
+            // 写入 CSS 原生变量，驱动整体渲染器
+            document.documentElement.style.setProperty('--lyric-theme-color', theme.normal);
+            document.documentElement.style.setProperty('--lyric-highlight-shadow', theme.glow1);
+            document.documentElement.style.setProperty('--lyric-highlight-shadow-secondary', theme.glow2);
+            
+            // 更新底部按钮的发光效果跟随
+            btnColorToggle.style.color = theme.highlight;
+            
+            // 更新调色浮窗的小圆圈高亮状态
+            document.querySelectorAll('.color-dot-btn').forEach(btn => {
+                if (btn.id === `theme-color-${themeId}`) {
+                    btn.classList.add('active-color');
+                } else {
+                    btn.classList.remove('active-color');
+                }
+            });
+            
+            // 强制渲染一次
+            updateLyricsLayout();
+        }
+
+        // --- 渲染并动态更新一键切歌模式按钮的 UI 图标与功能状态 ---
+        function updatePlayModeUI() {
+            if (playMode === 'list') {
+                btnPlayMode.title = "列表循环";
+                // 环绕列表重复图标
+                btnPlayMode.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.1l4 4-4 4"></path><path d="M3 12.1h14a4 4 0 0 0 4-4v-1.5"></path><path d="M7 21.9l-4-4 4-4"></path><path d="M21 11.9H7a4 4 0 0 0-4 4v1.5"></path></svg>`;
+                btnPlayMode.style.color = ''; // 经典白色
+                localAudio.loop = false;
+            } else if (playMode === 'shuffle') {
+                btnPlayMode.title = "随机播放";
+                // 随机交叉剪头图标
+                btnPlayMode.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>`;
+                btnPlayMode.style.color = 'var(--secondary-color)'; // 动态炫彩粉
+                localAudio.loop = false;
+            } else if (playMode === 'single') {
+                btnPlayMode.title = "单曲循环";
+                // 带有单曲指示器的重复图标
+                btnPlayMode.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.1l4 4-4 4"></path><path d="M3 12.1h14a4 4 0 0 0 4-4v-1.5"></path><path d="M7 21.9l-4-4 4-4"></path><path d="M21 11.9H7a4 4 0 0 0-4 4v1.5"></path><path d="M11 9.5H12V14.5"></path></svg>`;
+                btnPlayMode.style.color = 'var(--primary-hover)'; // 极光亮紫
+                localAudio.loop = true; // 开启原生音频轨道的单曲重播锁死
+            }
+        }
+
+        // --- 强化版 LRC 歌词解析引擎 ---
+        function parseLRC(lrcText) {
+            lyrics = [];
+            const lines = lrcText.split(/\r?\n/);
+            
+            for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+                
+                const timeReg = /\[(\d{1,2}):(\d{2})[:.](\d{2,3})\]/g;
+                let result;
+                const matchTimes = [];
+                
+                while ((result = timeReg.exec(line)) !== null) {
+                    const min = parseInt(result[1], 10);
+                    const sec = parseInt(result[2], 10);
+                    const fract = parseInt(result[3], 10); 
+                    
+                    let val = min * 60 + sec;
+                    if (result[3].length === 3) {
+                        val += fract / 1000;
+                    } else {
+                        val += fract / 100;
+                    }
+                    matchTimes.push(val);
+                }
+                
+                if (matchTimes.length > 0) {
+                    const text = line.replace(/\[\d{1,2}:\d{2}[:.]\d{2,3}\]/g, '').trim();
+                    for (const time of matchTimes) {
+                        lyrics.push({ time, text });
+                    }
+                }
+            }
+            lyrics.sort((a, b) => a.time - b.time);
+            
+            if (lyrics.length <= 5 && lyrics[0] && lyrics[0].text.includes("播放音乐")) {
+                extendPlaceholderDuration();
+            }
+        }
+
+        function extendPlaceholderDuration() {
+            const extended = [];
+            for (let loop = 0; loop < 25; loop++) {
+                const offset = loop * 20;
+                extended.push({ time: offset + 0, text: "🎵 正在为您播放音乐 🎵" });
+                extended.push({ time: offset + 4, text: "💡 温馨提示：点击右上角“导入文件夹”" });
+                extended.push({ time: offset + 8, text: "即可批量配对整个目录下的 MP3、LRC 与唱片图片" });
+                extended.push({ time: offset + 12, text: "✨ 点击唱片正中心还可以直接自定义更换图片哦" });
+                extended.push({ time: offset + 16, text: "🎚️ 调整右下方彩色画笔，还能支持自定义壁纸及虚化" });
+            }
+            lyrics = extended;
+        }
+
+        // --- 智能多重编码文本读取器 ---
+        function readTextFileWithEncoding(file, callback) {
+            const reader = new FileReader();
+            reader.readAsText(file, "UTF-8");
+            reader.onload = function(e) {
+                let text = e.target.result;
+                text = text.replace(/^\uFEFF/, ''); // 清除 UTF-8 BOM 签名
+                
+                if (text.includes('\uFFFD')) {
+                    const fallbackReader = new FileReader();
+                    fallbackReader.readAsText(file, "GBK");
+                    fallbackReader.onload = function(evt) {
+                        callback(evt.target.result.replace(/^\uFEFF/, ''));
+                    }
+                } else {
+                    callback(text);
+                }
+            };
+        }
+
+        // --- 文件夹深度智能识别与配对算法 ---
+        folderInput.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) {
+                // 💡 重点防呆修复：即使用户取消或返回，依然清空 value
+                folderInput.value = '';
+                return;
+            }
+
+            const audioFiles = [];
+            const lrcFiles = [];
+            const imgFiles = [];
+
+            files.forEach(file => {
+                const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+                if (['.mp3', '.flac', '.wav', '.m4a', '.ogg', '.aac'].includes(ext)) {
+                    audioFiles.push(file);
+                } else if (['.lrc', '.txt'].includes(ext)) {
+                    lrcFiles.push(file);
+                } else if (['.jpg', '.png', '.jpeg', '.webp'].includes(ext)) {
+                    imgFiles.push(file);
+                }
+            });
+
+            if (audioFiles.length === 0) {
+                showSimpleModal("未找到音频", "所选文件夹内似乎没有找到 MP3、FLAC、WAV 等可用音乐文件，请重试。");
+                // 💡 重置 input 的 value，确保下次点击同个文件夹能正常触发
+                folderInput.value = '';
+                return;
+            }
+
+            trackList.forEach(t => {
+                if (t.audioUrl) URL.revokeObjectURL(t.audioUrl);
+            });
+            trackList = [];
+
+            // 第一阶段：提取音频并进行智能 歌名/歌手 切分 (第一部分是歌曲，第二部分是歌手)
+            audioFiles.forEach((file, index) => {
+                const baseName = file.name.substring(0, file.name.lastIndexOf('.'));
+                let title = baseName;
+                let artist = "本地音频";
+
+                // 歌曲 - 歌手.mp3
+                const splitName = baseName.split('-');
+                if (splitName.length > 1) {
+                    title = splitName[0].trim();   // 歌曲
+                    artist = splitName[1].trim();  // 歌手
+                }
+
+                trackList.push({
+                    id: index,
+                    name: baseName.toLowerCase(), 
+                    title: title,
+                    artist: artist,
+                    audioFile: file,
+                    lrcFile: null,
+                    coverFile: null,
+                    audioUrl: null
+                });
+            });
+
+            // 第二阶段：智能歌词配对
+            lrcFiles.forEach(lrc => {
+                const lrcBaseName = lrc.name.substring(0, lrc.name.lastIndexOf('.')).toLowerCase();
+                let match = trackList.find(t => t.name === lrcBaseName);
+                if (!match) {
+                    match = trackList.find(t => t.name.includes(lrcBaseName) || lrcBaseName.includes(t.name));
+                }
+                if (match) {
+                    match.lrcFile = lrc;
+                }
+            });
+
+            // 第三阶段：智能唱片封面配对
+            const globalCover = imgFiles.find(img => {
+                const imgName = img.name.substring(0, img.name.lastIndexOf('.')).toLowerCase();
+                return ['cover', 'folder', 'album', 'bg', 'background'].includes(imgName);
+            });
+
+            imgFiles.forEach(img => {
+                const imgBaseName = img.name.substring(0, img.name.lastIndexOf('.')).toLowerCase();
+                const match = trackList.find(t => t.name === imgBaseName || t.name.includes(imgBaseName) || imgBaseName.includes(t.name));
+                if (match) {
+                    match.coverFile = img;
+                }
+            });
+
+            if (globalCover) {
+                trackList.forEach(t => {
+                    if (!t.coverFile) t.coverFile = globalCover;
+                });
+            }
+
+            renderPlaylistDrawer();
+            loadTrack(0);
+            playlistDrawer.classList.remove('hidden-drawer');
+
+            showSimpleModal("📂 文件夹读取成功", `
+                已成功导入并且智能配对了 <b>${audioFiles.length}</b> 首曲目！<br><br>
+                💡 现在请点击下方的 <b>“播放”</b> 按钮开启黑胶弧线歌词视听！
+            `);
+
+            // 💡 重点Bug修复：读取、渲染完曲目数据后，立即重置该 input 的 value，允许下次重复点击它切换目录
+            folderInput.value = '';
+        });
+
+        // 渲染侧边歌单
+        function renderPlaylistDrawer() {
+            playlistContainer.innerHTML = '';
+            trackList.forEach((t, idx) => {
+                const item = document.createElement('div');
+                item.className = 'playlist-item' + (idx === currentTrackIndex ? ' active-item' : '');
+                item.textContent = `${idx + 1}. ${t.title} - ${t.artist}`; 
+                item.title = t.title;
+                item.addEventListener('click', () => {
+                    loadTrack(idx);
+                    setPlayingState(true);
+                });
+                playlistContainer.appendChild(item);
+            });
+        }
+
+        // --- 曲目加载主控机 ---
+        function loadTrack(index) {
+            if (index < 0 || index >= trackList.length) return;
+            
+            if (currentTrackIndex !== -1 && trackList[currentTrackIndex].audioUrl) {
+                URL.revokeObjectURL(trackList[currentTrackIndex].audioUrl);
+                trackList[currentTrackIndex].audioUrl = null;
+            }
+
+            currentTrackIndex = index;
+            const t = trackList[index];
+
+            // 呈现歌名与歌手
+            trackTitle.textContent = t.title;
+            trackArtist.textContent = t.artist;
+
+            // 智能更新唱片图片
+            if (t.coverFile) {
+                const imgUrl = URL.createObjectURL(t.coverFile);
+                albumCover.src = imgUrl;
+                albumCoverSvg.style.display = 'none';
+                albumCover.style.display = 'block';
+            } else {
+                albumCover.src = '';
+                albumCover.style.display = 'none';
+                albumCoverSvg.style.display = 'block';
+            }
+
+            // 本地生成 safe 播放 URL
+            t.audioUrl = URL.createObjectURL(t.audioFile);
+            localAudio.src = t.audioUrl;
+
+            // 载入并纠偏歌词
+            if (t.lrcFile) {
+                readTextFileWithEncoding(t.lrcFile, (content) => {
+                    parseLRC(content);
+                    renderCurvedLyrics();
+                    currentLyricIndex = -1;
+                });
+            } else {
+                parseLRC(PLACEHOLDER_LYRICS);
+                renderCurvedLyrics();
+                currentLyricIndex = -1;
+            }
+
+            // 更新高亮
+            document.querySelectorAll('.playlist-item').forEach((item, i) => {
+                if (i === index) {
+                    item.classList.add('active-item');
+                    item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                } else {
+                    item.classList.remove('active-item');
+                }
+            });
+
+            localAudio.addEventListener('loadedmetadata', () => {
+                updatePlaybackProgress(0, localAudio.duration);
+            }, { once: true });
+
+            setPlayingState(false); 
+        }
+
+        // --- 弧形歌词布局 system (已完美修复 HTML 源码显示溢出 Bug) ---
+        function renderCurvedLyrics() {
+            lyricsViewport.innerHTML = '';
+            lyrics.forEach((lyric, idx) => {
+                const item = document.createElement('div');
+                item.className = 'lyric-line';
+                item.id = `lyric-line-${idx}`;
+                
+                let formattedText = lyric.text;
+
+                // 🌟 【漏洞修复中心】：
+                // 1. 在做任何 HTML 标记包裹之前，优先匹配并处理歌词中的英文部分。
+                // 这能保证英文正则绝对匹配不到随后的 HTML 标签源码（如 style, class, span 等）。
+                // 正则说明：匹配以字母开头、后续可带空格/括号/撇号并以字母结尾的纯正英文字段，或者单个英文字母。
+                formattedText = formattedText.replace(/([a-zA-Z][a-zA-Z\s\(\)'-]*[a-zA-Z]|[a-zA-Z])/g, (match) => {
+                    return `<span class="lyric-english" style="color: inherit !important;">${match}</span>`;
+                });
+
+                // 2. 然后，再对特定的图标进行安全的 HTML 标签化上色处理。
+                formattedText = formattedText
+                    .replace(/🎵/g, '<span style="color: inherit !important;">🎵</span>')
+                    .replace(/💡/g, '<span style="color: inherit !important;">💡</span>')
+                    .replace(/✨/g, '<span style="color: inherit !important;">✨</span>')
+                    .replace(/🎚️/g, '<span style="color: inherit !important;">🎚️</span>');
+                
+                item.innerHTML = formattedText;
+                lyricsViewport.appendChild(item);
+            });
+            updateLyricsLayout();
+        }
+
+        // 已经重构几何对齐与动态字号：
+        // 1. 【完美等距对齐 & 绝佳间隙再次拉开 📐】：
+        //    将 baseRadiusX (基础平移半径) 自适应放大（大屏 280px，中屏 210px，移动端 145px），向右侧完美推开歌词，留出完美的空间感。
+        // 2. 【夹角与间距精密缩窄】：将桌面端旋转偏角由 18 度极速缩减收窄至 11.5 度（中屏 13.5度，移动端 15.5度），
+        //    实现歌词行之间极为紧致、高密度、饱满有序的视觉体验。
+        // 3. 【离心阶梯外推 & 弧度极大幅度提升 🌀】：
+        //    重新引入平滑离心外撑补偿 `radialPush = Math.abs(relativeIdx) * 15;`。
+        //    同时，配合向心折扇回转对齐角度 rotate(${-angle * 0.48}deg)。
+        //    这在数学上确保每一行最左字符等弧度死锁对齐的同时，歌词行在桌面右侧极其惊艳、圆润地朝唱片围拢勾画出极美的大向心圆弧！
+        // 4. 【字号自适应增强 🌟】：字号基础系数已由原来的 0.85 放大 10% 提升至 0.935，
+        //    让默认开启时（100% 缩放比例）的歌词大字号拥有更厚重、大方的视听观赏体验，并能无缝连接滑块缩放因子！
+        function updateLyricsLayout() {
+            if (lyrics.length === 0) return;
+
+            const width = window.innerWidth;
+            const isMobile = width < 768;
+            
+            // 基础半径自适应：等比增加距离，拉开歌词与唱片的物理间隙
+            let baseRadiusX = 285; 
+            let fontSize = "0.72rem"; 
+            let angleSpacing = 11.5; // 【夹角大幅度缩小】
+
+            if (isMobile) {
+                baseRadiusX = Math.max(140, width * 0.36); 
+                fontSize = "0.6rem"; 
+                angleSpacing = 15.5; 
+            } else if (width < 1100) {
+                baseRadiusX = Math.max(205, width * 0.20); 
+                fontSize = "0.66rem"; 
+                angleSpacing = 13.5;
+            } else {
+                baseRadiusX = Math.min(295, width * 0.16); // 桌面大弧度外撑高阶定位
+                fontSize = "0.72rem";
+                angleSpacing = 11.5;
+            }
+
+            // 最长句自适应字号缩减算力
+            let maxCharWeight = lyrics.reduce((max, lyric) => {
+                const text = lyric.text;
+                if (!text || text.startsWith('🎵') || text.startsWith('💡') || text.startsWith('✨') || text.startsWith('🎚️')) return max;
+                
+                const chineseLen = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+                const otherLen = text.length - chineseLen;
+                const weight = chineseLen + (otherLen * 0.55);
+                return Math.max(max, weight);
+            }, 0);
+            
+            if (maxCharWeight === 0) maxCharWeight = 20; 
+            
+            let lengthScale = 1.0;
+            // 💡 重点防死锁修复：将判定长度从 13 放宽至 16，防止 placeholder 歌词在加载时被自动严重缩水
+            if (maxCharWeight > 16) {
+                lengthScale = Math.max(0.65, 16 / maxCharWeight);
+            }
+
+            // 在自适应算力下引入 0.935 比例偏置（由原 0.85 提升 10%），配合基础像素，使初始字体大小获得 10% 的提升！
+            let baseSizeValue = isMobile ? (width * 0.02 + 6) : (width * 0.009 + 8); 
+            // 💡 重点改进：将 finalFontSize 直接叠乘 lyricSizeMultiplier 状态，达成完美、平滑、不脱节的无级字体缩放！
+            let finalFontSize = baseSizeValue * lengthScale * 0.935 * lyricSizeMultiplier; 
+
+            lyrics.forEach((_, idx) => {
+                const el = document.getElementById(`lyric-line-${idx}`);
+                if (!el) return;
+
+                const relativeIdx = idx - currentLyricIndex;
+
+                // 保持前后四句主力渲染
+                if (relativeIdx >= -4 && relativeIdx <= 4) {
+                    el.style.opacity = '1';
+                    const angle = relativeIdx * angleSpacing; 
+                    
+                    let scale = 1;
+                    let opacity = 1;
+                    
+                    // 【离心平滑阶梯推开】: 各行平移量为 Math.abs(relativeIdx) * 15，这能彻底撑饱曲线。
+                    const absRel = Math.abs(relativeIdx);
+                    const radialPush = absRel * 15; 
+
+                    if (relativeIdx === 0) {
+                        scale = isMobile ? 1.15 : 1.25; 
+                        opacity = 1; 
+                        el.classList.add('lyric-highlight');
+                    } else {
+                        el.style.webkitTextStroke = "0px";
+                        el.classList.remove('lyric-highlight');
+                        
+                        if (absRel === 4) {
+                            // 第四句极弱消隐：体积急剧缩减，不透明度暴跌至 0.05
+                            scale = 0.35;
+                            opacity = 0.05;
+                        } else {
+                            // 前后1至3句
+                            if (relativeIdx > 0) {
+                                scale = 1 - (relativeIdx * 0.12); 
+                                opacity = Math.max(0.12, 0.45 - (relativeIdx * 0.10)); 
+                            } else {
+                                scale = 1 - (absRel * 0.14); 
+                                opacity = Math.max(0.10, 0.35 - (absRel * 0.08));
+                            }
+                        }
+                    }
+
+                    // 写入自适应字号
+                    el.style.fontSize = `${finalFontSize * scale}px`;
+                    el.style.opacity = opacity;
+                    
+                    const pullFactor = isMobile ? 10 : 55; 
+                    
+                    // 极坐标变换：
+                    // 1. rotate(${angle}deg) translateX(...) 让起点完全锁死在圆周半径平滑增长的正圆弧轨线上。
+                    // 2. 将回退纠偏偏角调校为完美精准的 rotate(${-angle * 0.48}deg)，这使得每行最左字对齐的同时，
+                    //    歌词中轴朝着黑胶圆心勾画出极富艺术包裹美学的大弯曲弧线，不再有生硬、平行的视觉！
+                    el.style.transform = `rotate(${angle}deg) translateX(${baseRadiusX + pullFactor + radialPush}px) rotate(${-angle * 0.48}deg)`;
+                    el.style.zIndex = 12 - Math.abs(relativeIdx);
+                } else {
+                    const farAngle = relativeIdx > 0 ? 95 : -95;
+                    el.style.opacity = '0';
+                    el.style.transform = `rotate(${farAngle}deg) translateX(${baseRadiusX * 1.5}px) rotate(${-farAngle * 0.48}deg)`;
+                    el.style.zIndex = '0';
+                }
+            });
+        }
+
+        function syncLyrics(time) {
+            let activeIdx = -1;
+            for (let i = 0; i < lyrics.length; i++) {
+                if (time >= lyrics[i].time) {
+                    activeIdx = i;
+                } else {
+                    break;
+                }
+            }
+            if (activeIdx !== currentLyricIndex) {
+                currentLyricIndex = activeIdx;
+                updateLyricsLayout();
+            }
+        }
+
+        // --- 本地播放时间更新事件 ---
+        localAudio.addEventListener('timeupdate', () => {
+            // 💡 重点优化：如果用户正在拖拽进度条，禁止 timeupdate 强行修改进度条位置，防止冲突抖动
+            if (isDraggingProgressBar) return; 
+
+            const cur = localAudio.currentTime;
+            const dur = localAudio.duration || 0;
+            updatePlaybackProgress(cur, dur);
+            syncLyrics(cur);
+        });
+
+        // --- 新增：核心多维播放序列切歌引擎 ---
+        function playNextTrack() {
+            if (trackList.length === 0) return;
+            if (trackList.length === 1) {
+                localAudio.currentTime = 0;
+                localAudio.play().catch(err => console.warn(err));
+                return;
+            }
+
+            if (playMode === 'shuffle') {
+                // 随机播放模式（智能避免连轴重复）
+                let nextIdx = currentTrackIndex;
+                while (nextIdx === currentTrackIndex) {
+                    nextIdx = Math.floor(Math.random() * trackList.length);
+                }
+                loadTrack(nextIdx);
+            } else {
+                // 顺序/列表播放模式
+                let nextIdx = currentTrackIndex + 1;
+                if (nextIdx >= trackList.length) {
+                    nextIdx = 0; // 自动循环重回歌单顶部
+                }
+                loadTrack(nextIdx);
+            }
+            setPlayingState(true);
+        }
+
+        function playPrevTrack() {
+            if (trackList.length === 0) return;
+            if (trackList.length === 1) {
+                localAudio.currentTime = 0;
+                localAudio.play().catch(err => console.warn(err));
+                return;
+            }
+
+            if (playMode === 'shuffle') {
+                // 随机模式（上一曲也执行智能随机提取）
+                let prevIdx = currentTrackIndex;
+                while (prevIdx === currentTrackIndex) {
+                    prevIdx = Math.floor(Math.random() * trackList.length);
+                }
+                loadTrack(prevIdx);
+            } else {
+                // 顺序/列表模式
+                let prevIdx = currentTrackIndex - 1;
+                if (prevIdx < 0) {
+                    prevIdx = trackList.length - 1; // 自动卷回底部
+                }
+                loadTrack(prevIdx);
+            }
+            setPlayingState(true);
+        }
+
+        // 绑定歌曲物理播放结束事件（100% 遵守多维切歌引擎 🔄）
+        localAudio.addEventListener('ended', () => {
+            if (playMode === 'single') {
+                // 原生单曲循环 fallback 逻辑
+                localAudio.currentTime = 0;
+                localAudio.play().catch(err => console.warn(err));
+            } else if (trackList.length > 0) {
+                // 触发下一曲逻辑 (自动识别 顺序/随机)
+                playNextTrack();
+            } else {
+                setPlayingState(false);
+                localAudio.currentTime = 0;
+            }
+        });
+
+        // --- Web Audio 核心机制 ---
+        function initWebAudio() {
+            try {
+                if (audioContext) return;
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                audioContext = new AudioContextClass();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                
+                gainNode = audioContext.createGain();
+                gainNode.gain.value = volumeControl.value;
+
+                analyser.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+            } catch(e) {
+                try {
+                    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                    audioContext = new AudioContextClass();
+                    analyser = audioContext.createAnalyser();
+                    analyser.fftSize = 256;
+                    gainNode = audioContext.createGain();
+                    gainNode.gain.value = volumeControl.value;
+                    analyser.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
+                } catch(err) {
+                    console.warn("声卡初始化失败：", err);
+                }
+            }
+        }
+
+        function connectLocalAudioToWebAudio() {
+            try {
+                if (!audioContext) initWebAudio();
+                if (audioContext && !audioSource) {
+                    audioSource = audioContext.createMediaElementSource(localAudio);
+                    audioSource.connect(analyser);
+                }
+            } catch(e) {
+                console.warn("音频管道连接失败：", e);
+            }
+        }
+
+        // --- Canvas 频谱仪绘制 & 唱片实时重低音律动控制 ---
+        function resizeCanvas() {
+            const rect = canvas.parentNode.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+
+        // 核心 Canvas 动画
+        function initCanvasVisualizer() {
+            const bufferLength = 128;
+            const dataArray = new Uint8Array(bufferLength);
+
+            function draw() {
+                requestAnimationFrame(draw);
+                
+                const width = canvas.width;
+                const height = canvas.height;
+                ctx.clearRect(0, 0, width, height);
+
+                const centerX = width / 2;
+                const centerY = height / 2;
+                
+                const isMobile = window.innerWidth < 640;
+                const baseRadius = isMobile ? 110 : 150;
+
+                let averageBass = 0;
+                if (analyser && isPlaying) {
+                    try {
+                        analyser.getByteFrequencyData(dataArray);
+                        for (let i = 0; i < 12; i++) {
+                            averageBass += dataArray[i];
+                        }
+                        averageBass /= 12;
+                    } catch(e) {}
+                } else {
+                    for (let i = 0; i < bufferLength; i++) {
+                        dataArray[i] = Math.sin(Date.now() * 0.005 + i) * 8 + 8;
+                    }
+                }
+
+                // 【重低音物理律动】：仅针对 pulsing-core 容器进行 scale 弹性跳跃。
+                const pulse = averageBass * 0.07;
+                if (isPlaying) {
+                    vinylPulsingCore.style.transform = `scale(${1 + pulse / 250})`;
+                } else {
+                    vinylPulsingCore.style.transform = 'scale(1)';
+                }
+
+                // 💡 【毫秒级同步打碟级唱片旋转】：
+                // 1. 精准判断当前是处于手指/鼠标拖拽中，还是自动播放中
+                const displayTime = isDraggingProgressBar ? dragTargetTime : localAudio.currentTime;
+                // 2. 依照 20s/一整转（即 1s 旋转 18 度）公式实时定位唱片的绝对角度
+                const rotationAngle = (displayTime * 18) % 360; 
+                // 3. 通过 inline style 实时锁定旋转角度，不论是倒放还是正滑都顺滑契合
+                vinylContainer.style.transform = `rotate(${rotationAngle}deg)`;
+
+                // 绘制圆形环绕极光频谱
+                const totalBars = 64; 
+                ctx.save();
+                ctx.translate(centerX, centerY);
+
+                const maxBarHeight = isMobile ? 25 : 38;
+
+                for (let i = 0; i < totalBars; i++) {
+                    const angle = (i / totalBars) * Math.PI * 2;
+                    const value = dataArray[i % bufferLength] || 0;
+                    
+                    const barHeight = isPlaying ? (value / 255) * maxBarHeight + 3 : Math.sin(Date.now() * 0.0015 + i * 0.25) * 3 + 1;
+
+                    ctx.rotate(angle);
+                    
+                    const grad = ctx.createLinearGradient(0, baseRadius + 4, 0, baseRadius + 10 + barHeight);
+                    grad.addColorStop(0, 'rgba(168, 85, 247, 0.5)'); 
+                    grad.addColorStop(1, 'rgba(236, 72, 153, 0)');  
+                    
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(-2, baseRadius + 6, 4, barHeight);
+
+                    ctx.fillStyle = `rgba(236, 72, 153, ${Math.min(1, barHeight / 25 + 0.3)})`;
+                    ctx.beginPath();
+                    ctx.arc(0, baseRadius + 10 + barHeight, 2.5, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.rotate(-angle);
+                }
+
+                ctx.restore();
+            }
+
+            ctx.imageSmoothingEnabled = true;
+            draw();
+        }
+
+        // --- 全局播放器控制 ---
+        function setPlayingState(state) {
+            isPlaying = state;
+            if (isPlaying) {
+                initWebAudio();
+                connectLocalAudioToWebAudio();
+
+                svgPlay.style.display = 'none';
+                svgPause.style.display = 'block';
+                tonearm.style.transform = "rotate(0deg)"; 
+                
+                if (audioContext && audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+
+                localAudio.play().catch((err) => {
+                    console.warn("播放受阻：", err);
+                });
+            } else {
+                svgPlay.style.display = 'block';
+                svgPause.style.display = 'none';
+                tonearm.style.transform = "rotate(-25deg)"; 
+                localAudio.pause();
+                vinylPulsingCore.style.transform = 'scale(1)'; 
+            }
+        }
+
+        btnPlayPause.addEventListener('click', () => {
+            if (!localAudio.src) {
+                showSimpleModal("提示", "请导入您的本地歌曲文件夹或单曲 MP3，点击播放开启极光黑胶视听！");
+                return;
+            }
+            setPlayingState(!isPlaying);
+        });
+
+        // --- 唱片中心自定义封面更换 ---
+        albumCoverClicker.addEventListener('click', () => {
+            coverFileInput.click(); 
+        });
+
+        coverFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                coverFileInput.value = '';
+                return;
+            }
+
+            const url = URL.createObjectURL(file);
+            albumCover.src = url;
+            albumCoverSvg.style.display = 'none'; 
+            albumCover.style.display = 'block';  
+
+            if (currentTrackIndex !== -1) {
+                trackList[currentTrackIndex].coverFile = file;
+                renderPlaylistDrawer();
+            }
+
+            // 💡 清空值，防止下次导入同一张图片不触发
+            coverFileInput.value = '';
+        });
+
+        // 导入单首本地音频 
+        audioFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                audioFileInput.value = '';
+                return;
+            }
+
+            const baseName = file.name.substring(0, file.name.lastIndexOf('.'));
+            let title = baseName;
+            let artist = "本地单曲";
+
+            const splitName = baseName.split('-');
+            if (splitName.length > 1) {
+                title = splitName[0].trim();   // 歌曲
+                artist = splitName[1].trim();  // 歌手
+            }
+
+            // 建立单首曲目池
+            trackList = [{
+                id: 0,
+                name: baseName.toLowerCase(),
+                title: title,
+                artist: artist,
+                audioFile: file,
+                lrcFile: null,
+                coverFile: null,
+                audioUrl: null
+            }];
+
+            renderPlaylistDrawer();
+            loadTrack(0);
+            
+            showSimpleModal("导入成功", "🎵 单曲导入完毕，请点击下方 <b>圆形播放按钮</b> 激活声卡开始畅听！");
+
+            // 💡 清空值，允许重复导入相同曲目
+            audioFileInput.value = '';
+        });
+
+        // 导入单首本地歌词
+        lrcFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                lrcFileInput.value = '';
+                return;
+            }
+
+            readTextFileWithEncoding(file, (content) => {
+                parseLRC(content);
+                renderCurvedLyrics();
+                currentLyricIndex = -1;
+                const curTime = localAudio.currentTime;
+                syncLyrics(curTime);
+
+                if (currentTrackIndex !== -1) {
+                    trackList[currentTrackIndex].lrcFile = file;
+                }
+            });
+
+            // 💡 清空值，允许重复导入相同歌词
+            lrcFileInput.value = '';
+        });
+
+        // 进度渲染
+        function updatePlaybackProgress(current, duration) {
+            if (!duration) return;
+            const percent = (current / duration) * 100;
+            progressBar.style.width = `${percent}%`;
+            
+            timeCurrent.textContent = formatTime(current);
+            timeDuration.textContent = formatTime(duration);
+        }
+
+        // 格式化时间
+        function formatTime(secs) {
+            const m = Math.floor(secs / 60).toString().padStart(2, '0');
+            const s = Math.floor(secs % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        // 💡 --- 高精度丝滑拖拽核心交互逻辑重构 ---
+        
+        // 计算指针当前位置对应的播放时间百分比
+        function getPercentageFromEvent(e) {
+            const rect = progressContainer.getBoundingClientRect();
+            // 兼容触屏端和鼠标端位置获取
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const offsetX = Math.max(0, Math.min(clientX - rect.left, rect.width));
+            return offsetX / rect.width;
+        }
+
+        // 触发更新（不写入currentTime，仅视觉渲染滑块，消除抖动）
+        function updateTimelineOnDrag(e) {
+            if (!localAudio.src || !localAudio.duration) return;
+            const percent = getPercentageFromEvent(e);
+            progressBar.style.width = `${percent * 100}%`;
+            
+            dragTargetTime = percent * localAudio.duration;
+            timeCurrent.textContent = formatTime(dragTargetTime);
+
+            // 🌟 【本章核心重构一】：拖动滑块时，高频强制更新弧线歌词的排列角度和高亮，扫拂极度顺滑！
+            syncLyrics(dragTargetTime);
+        }
+
+        // 1. 进度条容器按下鼠标事件
+        progressContainer.addEventListener('mousedown', (e) => {
+            if (!localAudio.src) return;
+            isDraggingProgressBar = true;
+            progressContainer.classList.add('dragging');
+            updateTimelineOnDrag(e);
+        });
+
+        // 2. 进度条容器触屏开始事件 (移动端适配)
+        progressContainer.addEventListener('touchstart', (e) => {
+            if (!localAudio.src) return;
+            isDraggingProgressBar = true;
+            progressContainer.classList.add('dragging');
+            updateTimelineOnDrag(e);
+        }, { passive: true });
+
+        // 3. 全局鼠标移动监听（即使鼠标滑到进度条外面也能丝滑跟踪）
+        window.addEventListener('mousemove', (e) => {
+            if (!isDraggingProgressBar) return;
+            e.preventDefault();
+            updateTimelineOnDrag(e);
+        });
+
+        // 4. 全局触摸滑动监听 (移动端适配)
+        window.addEventListener('touchmove', (e) => {
+            if (!isDraggingProgressBar) return;
+            updateTimelineOnDrag(e);
+        }, { passive: false });
+
+        // 5. 全局抬起鼠标/手指事件（在此处一槌定音，完成 currentTime 写入，绝无回弹）
+        function handleDragEnd(e) {
+            if (!isDraggingProgressBar) return;
+            isDraggingProgressBar = false;
+            progressContainer.classList.remove('dragging');
+
+            if (localAudio.src && localAudio.duration) {
+                const percent = getPercentageFromEvent(e);
+                const targetTime = percent * localAudio.duration;
+                
+                localAudio.currentTime = targetTime;
+                updatePlaybackProgress(targetTime, localAudio.duration);
+                syncLyrics(targetTime);
+            }
+        }
+
+        window.addEventListener('mouseup', handleDragEnd);
+        window.addEventListener('touchend', handleDragEnd);
+
+        // 音量调节
+        volumeControl.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            localAudio.volume = val;
+            if (gainNode) {
+                gainNode.gain.setValueAtTime(val, audioContext.currentTime);
+            }
+        });
+
+        // --- 更换背景逻辑 ---
+        btnBgToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            colorMenu.classList.remove('show'); // 互斥
+            fontMenu.classList.remove('show'); // 互斥
+            bgMenu.style.display = bgMenu.style.display === 'block' ? 'none' : 'block';
+        });
+
+        // 💡 全局点击监听（已统一增加播放列表收起逻辑）
+        document.addEventListener('click', () => {
+            bgMenu.style.display = 'none';
+            colorMenu.classList.remove('show');
+            fontMenu.classList.remove('show');
+            playlistDrawer.classList.add('hidden-drawer'); // 🌟 核心优化：点击外界任意位置，自动隐藏歌单抽屉
+        });
+
+        bgMenu.addEventListener('click', (e) => {
+            e.stopPropagation(); 
+        });
+        
+        colorMenu.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        fontMenu.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        // 🌟 核心优化：阻止歌单面板内部事件向上传递，防止被全局点击事件关闭
+        playlistDrawer.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+
+        // 本地图片/视频自定义壁纸读取 (已重构，完美兼容静态JPG与动态MP4视频)
+        bgFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) {
+                bgFileInput.value = '';
+                return;
+            }
+
+            // 销毁上一个视频 of object URL
+            if (bgVideoUrl) {
+                URL.revokeObjectURL(bgVideoUrl);
+                bgVideoUrl = null;
+            }
+
+            const url = URL.createObjectURL(file);
+
+            if (file.type.startsWith('video/')) {
+                // 如果是动态视频，展示并自动无声循环播放视频 background
+                bgOverlay.style.backgroundImage = 'none';
+                bgOverlay.style.display = 'none';
+
+                bgVideo.src = url;
+                bgVideo.style.display = 'block';
+                bgVideo.play().catch(err => {
+                    console.warn("视频自动播放受浏览器安全沙盒策略限制：", err);
+                });
+                bgVideoUrl = url;
+            } else {
+                // 如果是静态图片背景
+                bgVideo.src = '';
+                bgVideo.style.display = 'none';
+
+                bgOverlay.style.backgroundImage = `url(${url})`;
+                bgOverlay.style.display = 'block';
+            }
+            
+            updateBgFilter();
+
+            // 💡 清空值，允许重复导入相同背景
+            bgFileInput.value = '';
+        });
+
+        // 壁纸虚化参数控制
+        bgBlurInput.addEventListener('input', (e) => {
+            const val = e.target.value;
+            blurValText.textContent = `${val}px`;
+            updateBgFilter();
+        });
+
+        // 彻底根治 0px 仍模糊的浏览器 Bug：当值为 0 时，绝对不使用 blur 函数
+        function updateBgFilter() {
+            const blurVal = parseInt(bgBlurInput.value, 10);
+            blurValText.textContent = `${blurVal}px`; // 与滑块数值同步
+            
+            const filterString = blurVal === 0 
+                ? "brightness(0.655)" 
+                : `blur(${blurVal}px) brightness(0.655)`;
+            
+            bgOverlay.style.filter = filterString;
+            bgVideo.style.filter = filterString;
+        }
+
+        // 切歌快捷按钮控制 (完美对接多维切歌流控引擎)
+        document.getElementById('btn-prev').addEventListener('click', () => {
+            if (trackList.length > 0) {
+                playPrevTrack();
+            } else if (localAudio.src) {
+                localAudio.currentTime = 0;
+            }
+        });
+
+        document.getElementById('btn-next').addEventListener('click', () => {
+            if (trackList.length > 0) {
+                playNextTrack();
+            } else {
+                showSimpleModal("列表提示", "当前只有单支歌曲正在播放哦。点击右上角“导入文件夹”即可加载您的整个本地歌单！");
+            }
+        });
+
+        // 抽屉展开折叠控制
+        btnPlaylistToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            playlistDrawer.classList.toggle('hidden-drawer');
+        });
+
+        btnDrawerClose.addEventListener('click', () => {
+            playlistDrawer.classList.add('hidden-drawer');
+        });
+
+        // 弹窗管理
+        function showSimpleModal(title, msg) {
+            infoModal.querySelector('.modal-title').innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>${title}`;
+            infoModal.querySelector('.modal-body').innerHTML = `<p>${msg}</p>`;
+            infoModal.classList.remove('hidden');
+        }
+
+        btnInfo.addEventListener('click', () => {
+            showSimpleModal("引导说明", `
+                <p><strong>💿 100% 纯本地离线运行设计</strong></p>
+                <p>此页面移除了所有互联网加载依赖，可在无网状态下双击打开、完整交互运行。</p>
+                <p><strong>💡 基础操作指引：</strong></p>
+                <ul>
+                    <li>点击右上角<strong>“本地歌曲 (MP3)”</strong>，导入您本地的歌曲。</li>
+                    <li>点击右上角<strong>“导入歌词 (LRC)”</strong>，选择配套歌词（无歌词时播放器会自适应产生动态滚动提醒）。</li>
+                    <li><strong>点击唱片最中央 of 核心圆形圆孔</strong>，您可以直接上传任意本地图片。<b>上传后，您的专属海报将完美内嵌，伴随音浪的频谱特效以及唱片匀速进行 360 度圆周旋转！</b></li>
+                    <li><strong>开启播放</strong>：导入音频后，点击下方控制台正中带有紫色光晕 of 播放大按钮，即可安全激活通道播放声音！</li>
+                </ul>
+            `);
+        });
+
+        const hideModal = () => infoModal.classList.add('hidden');
+        closeModal.addEventListener('click', hideModal);
+        btnModalOk.addEventListener('click', hideModal);
+
+    </script>
+</body>
+</html>
